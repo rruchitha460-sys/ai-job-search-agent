@@ -34,12 +34,18 @@ LOCATION: {job['location']}
 
 Explanation:"""
 
-    response = client.chat.completions.create(
-        model=MODEL,
-        messages=[{"role": "user", "content": prompt}],
-    )
+    for attempt in range(2):  # try once, retry once if the response looks broken
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        result = response.choices[0].message.content.strip()
 
-    return response.choices[0].message.content.strip()
+        # Filter out malformed/safety-check-only responses from free models
+        if len(result) > 30 and "user safety" not in result.lower():
+            return result
+
+    return "Could not generate an explanation for this match right now — the AI service returned an unusable response. Try re-running the search."
 
 
 def run_agent(query="machine learning engineer", location="Bangalore", top_k=5):
