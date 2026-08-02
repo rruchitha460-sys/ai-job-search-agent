@@ -34,18 +34,25 @@ LOCATION: {job['location']}
 
 Explanation:"""
 
-    for attempt in range(2):  # try once, retry once if the response looks broken
-        response = client.chat.completions.create(
-            model=MODEL,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        result = response.choices[0].message.content.strip()
+    try:
+        for attempt in range(2):  # try once, retry once if the response looks broken
+            response = client.chat.completions.create(
+                model=MODEL,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            result = response.choices[0].message.content.strip()
 
-        # Filter out malformed/safety-check-only responses from free models
-        if len(result) > 30 and "user safety" not in result.lower():
-            return result
+            # Filter out malformed/safety-check-only responses from free models
+            if len(result) > 30 and "user safety" not in result.lower():
+                return result
 
-    return "Could not generate an explanation for this match right now — the AI service returned an unusable response. Try re-running the search."
+        return "Could not generate an explanation for this match right now — the AI service returned an unusable response. Try re-running the search."
+
+    except Exception as e:
+        error_str = str(e)
+        if "429" in error_str or "rate limit" in error_str.lower():
+            return "⚠️ Daily free AI explanation limit reached. The match itself is still valid (based on resume similarity) — explanations will resume tomorrow, or add OpenRouter credits for higher limits."
+        return f"Could not generate an explanation due to an error: {error_str[:150]}"
 
 
 def run_agent(query="machine learning engineer", location="Bangalore", top_k=5):
