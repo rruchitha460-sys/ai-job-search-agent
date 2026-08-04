@@ -1,4 +1,5 @@
 import requests
+import concurrent.futures
 
 # Known company slugs on Lever's public postings API.
 # Add more by checking: jobs.lever.co/<slug> on their careers page.
@@ -52,13 +53,14 @@ def fetch_lever_jobs(company_slug, query=""):
 
 
 def search_lever_jobs(query="", companies=None):
-    """Search across multiple Lever-hosted companies for a keyword."""
+    """Search across multiple Lever-hosted companies for a keyword, in parallel."""
     companies = companies or LEVER_COMPANIES
     all_jobs = []
 
-    for company in companies:
-        jobs = fetch_lever_jobs(company, query=query)
-        all_jobs.extend(jobs)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(companies)) as executor:
+        futures = [executor.submit(fetch_lever_jobs, company, query) for company in companies]
+        for future in concurrent.futures.as_completed(futures):
+            all_jobs.extend(future.result())
 
     return all_jobs
 

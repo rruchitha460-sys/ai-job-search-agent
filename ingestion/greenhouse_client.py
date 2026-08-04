@@ -1,4 +1,5 @@
 import requests
+import concurrent.futures
 
 # Known company slugs on Greenhouse's public Job Board API.
 # Add more by checking: boards.greenhouse.io/<slug> on their careers page.
@@ -67,13 +68,18 @@ def fetch_greenhouse_jobs(company_slug, query="", location_filter=""):
 
 def search_greenhouse_jobs(query="", location_filter="", companies=None):
     """Search across multiple Greenhouse-hosted companies for a keyword,
-    optionally filtered by location."""
+    optionally filtered by location. Fetches all companies in parallel —
+    sequential fetching of 8 companies was the main cause of slow search."""
     companies = companies or GREENHOUSE_COMPANIES
     all_jobs = []
 
-    for company in companies:
-        jobs = fetch_greenhouse_jobs(company, query=query, location_filter=location_filter)
-        all_jobs.extend(jobs)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(companies)) as executor:
+        futures = [
+            executor.submit(fetch_greenhouse_jobs, company, query, location_filter)
+            for company in companies
+        ]
+        for future in concurrent.futures.as_completed(futures):
+            all_jobs.extend(future.result())
 
     return all_jobs
 

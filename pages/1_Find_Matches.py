@@ -4,7 +4,7 @@ import os
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agent.orchestrator import app_graph
+from agent.orchestrator import app_graph, tailor_resume
 from storage.models import init_db
 
 st.set_page_config(page_title="Find Matches — AI Job Searcher Agent", page_icon="🔎", layout="wide")
@@ -214,5 +214,11 @@ if run_button:
                 </div>
             </div>
             """, unsafe_allow_html=True)
+
+            with st.expander(f"✨ Tailor my resume for {m['company']}"):
+                if st.button("Generate suggestions", key=f"tailor_{m['rank']}_{m['company']}"):
+                    with st.spinner("Generating tailored suggestions..."):
+                        suggestions = tailor_resume(st.session_state.resume_text, m)
+                        st.markdown(suggestions)
 else:
     st.info("Set your search terms above and click **Find Matching Jobs** to get started.")
