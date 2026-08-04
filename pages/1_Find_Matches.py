@@ -148,6 +148,7 @@ run_button = st.button("🚀 Find Matching Jobs", type="primary", use_container_
 st.divider()
 
 # ---------- Main logic ----------
+# ---------- Main logic ----------
 if run_button:
     progress = st.progress(0, text="Running multi-agent search...")
 
@@ -166,23 +167,31 @@ if run_button:
     })
 
     progress.progress(80, text="Generating AI explanations...")
+    progress.empty()
 
+    # Store results in session_state so they survive reruns triggered by
+    # OTHER buttons (like "Generate suggestions") — without this, clicking
+    # any button inside the results resets run_button to False and wipes
+    # the whole results section from view.
+    st.session_state.search_results = result
+    st.session_state.search_query = query
+    st.session_state.search_location = location
+
+if "search_results" in st.session_state:
+    result = st.session_state.search_results
     matches = result["matches"][:top_k]
 
     if sort_by == "Company (A-Z)":
         matches = sorted(matches, key=lambda m: m["company"] or "")
 
-    progress.empty()
-
     if result.get("errors"):
         st.caption(f"⚠ Some sources had issues: {', '.join(result['errors'])}")
 
     if not matches:
-        st.warning(f"No jobs found for '{query}' in '{location}'. Try a different search.")
+        st.warning(f"No jobs found for '{st.session_state.search_query}' in '{st.session_state.search_location}'. Try a different search.")
     else:
-        st.success(f"Found {len(matches)} matches for **{query}** in **{location}**")
+        st.success(f"Found {len(matches)} matches for **{st.session_state.search_query}** in **{st.session_state.search_location}**")
 
-        # ---- Stats row ----
         strong_count = sum(1 for m in matches if m["distance"] < 1.25)
         avg_score = sum(m["distance"] for m in matches) / len(matches)
 
