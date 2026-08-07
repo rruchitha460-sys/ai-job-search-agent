@@ -1,9 +1,10 @@
 from typing import TypedDict
+import concurrent.futures
 from langgraph.graph import StateGraph, END
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_groq import ChatGroq
 from dotenv import load_dotenv
 from matching.resume_reader import extract_resume_text
-import concurrent.futures
 
 load_dotenv()
 
@@ -26,7 +27,10 @@ class AgentState(TypedDict):
     errors: list
 
 
-# --- LLM for explanations (and, for now, tailoring too) ---
+# --- LLMs, tried in this order for explanations/tailoring ---
+# Groq first: fast, generous per-minute free limit.
+# Gemini second: falls back here if Groq errors or rate-limits.
+groq_llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.3)
 explanation_llm = ChatGoogleGenerativeAI(model="gemini-flash-latest", temperature=0.3)
 
 EXPLANATION_PROMPT = """You are helping a job seeker understand why a job matches their resume.
@@ -57,8 +61,9 @@ resume — just give targeted edits."""
 
 
 def _extract_text(response) -> str:
-    """Gemini's newer SDK returns content as a list of blocks
-    (text + a 'signature' block for internal reasoning) — extract just the text parts."""
+    """Some providers (e.g. Gemini's newer SDK) return content as a list of blocks
+    (text + a 'signature' block for internal reasoning) — extract just the text parts.
+    Others (e.g. Groq) return a plain string already."""
     if isinstance(response.content, list):
         return "".join(
             block.get("text", "") for block in response.content
@@ -67,7 +72,21 @@ def _extract_text(response) -> str:
     return response.content
 
 
-# --- Nodes (part of the main graph) ---
+def _invoke_with_fallback(prompt: str) -> str:
+    """
+    Tries Groq first, falls back to Gemini if Groq errors or rate-limits.
+    Keeps explanations/tailoring working even if one free-tier provider
+    is temporarily down or capped — matters most during a live demo.
+    """
+    for llm, name in [(groq_llm, "Groq"), (explanation_llm, "Gemini")]:
+        try:
+            response = llm.invoke(prompt)
+            return _extract_text(response)
+        except Exception as e:
+            print(f"{name} failed, trying next provider: {e}")
+    return "Couldn't generate this right now — all providers are unavailable."
+
+
 def _fetch_source(tool_fn, name, query, location):
     try:
         if name == "lever":
@@ -81,6 +100,7 @@ def _fetch_source(tool_fn, name, query, location):
         return name, [], str(e)
 
 
+# --- Nodes ---
 def source_jobs(state: AgentState) -> AgentState:
     jobs, errors = [], []
     sources = [
@@ -102,6 +122,7 @@ def source_jobs(state: AgentState) -> AgentState:
 
     return {**state, "jobs": jobs, "errors": errors}
 
+
 def filter_jobs(state: AgentState) -> AgentState:
     filtered = filter_experience_tool.invoke({
         "jobs": state["jobs"],
@@ -122,24 +143,30 @@ def match_jobs(state: AgentState) -> AgentState:
 def explain_matches(state: AgentState) -> AgentState:
     explained = []
     for job in state["matches"]:
-        explanation_text = None
-        for attempt in range(2):  # retry once on transient failures
-            try:
-                prompt = EXPLANATION_PROMPT.format(
-                    resume_text=state["resume_text"][:500],
-                    title=job.get("title"),
-                    company=job.get("company"),
-                    description=(job.get("description") or "")[:800],
-                )
-                response = explanation_llm.invoke(prompt)
-                explanation_text = _extract_text(response)
-                break  # success — stop retrying
-            except Exception as e:
-                if attempt == 1:  # last attempt failed too
-                    print(f"Explanation error for {job.get('title')}: {e}")
-        job["explanation"] = explanation_text
+        prompt = EXPLANATION_PROMPT.format(
+            resume_text=state["resume_text"][:500],
+            title=job.get("title"),
+            company=job.get("company"),
+            description=(job.get("description") or "")[:800],
+        )
+        job["explanation"] = _invoke_with_fallback(prompt)
         explained.append(job)
     return {**state, "matches": explained}
+
+
+def tailor_resume(resume_text: str, job: dict) -> str:
+    """
+    Generates specific resume tailoring suggestions for one job.
+    Called on-demand from the UI (low volume), so it's fine to use a
+    richer prompt with more context than the explanation agent.
+    """
+    prompt = TAILORING_PROMPT.format(
+        resume_text=resume_text[:1500],
+        title=job.get("title"),
+        company=job.get("company"),
+        description=(job.get("description") or "")[:1200],
+    )
+    return _invoke_with_fallback(prompt)
 
 
 def should_retry_sourcing(state: AgentState) -> str:
@@ -162,26 +189,6 @@ graph.add_edge("match", "explain")
 graph.add_edge("explain", END)
 
 app_graph = graph.compile()
-
-
-# --- Resume tailoring agent (NOT part of the graph — called on-demand from the UI) ---
-def tailor_resume(resume_text: str, job: dict) -> str:
-    """
-    Generates specific resume tailoring suggestions for one job.
-    Called on-demand (e.g. a button click per job), not as part of the main
-    source->filter->match->explain graph, since it's low-volume and user-triggered.
-    """
-    try:
-        prompt = TAILORING_PROMPT.format(
-            resume_text=resume_text[:1500],  # more context than explanation agent — quality matters here
-            title=job.get("title"),
-            company=job.get("company"),
-            description=(job.get("description") or "")[:1200],
-        )
-        response = explanation_llm.invoke(prompt)
-        return _extract_text(response)
-    except Exception as e:
-        return f"Couldn't generate tailoring suggestions right now: {e}"
 
 
 if __name__ == "__main__":
